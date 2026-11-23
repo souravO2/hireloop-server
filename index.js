@@ -16,6 +16,11 @@ app.use(express.json());
 
 const client = new MongoClient(process.env.MDB_URI);
 
+const myLogger = (req, res, next) => {
+  console.log("LOGGED");
+  next();
+};
+
 export async function connectToMongoDB() {
   try {
     await client.connect();
@@ -29,9 +34,55 @@ export async function connectToMongoDB() {
 const mongoClient = await connectToMongoDB();
 const db = mongoClient.db("hireloop");
 const users = db.collection("user");
+const sessions = db.collection("session");
 const jobs = db.collection("jobs");
 const applications = db.collection("applications");
 const payments = db.collection("payments");
+
+const verifyToken = async (req, res, next) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader) {
+    return res.status(401).send({ message: "Unauthorized access" });
+  }
+  const token = authHeader.split(" ")[1];
+  if (!token) {
+    return res.status(401).send({ message: "Unauthorized access" });
+  }
+  const query = { token };
+  const session = await sessions.findOne(query);
+  if (!session) {
+    return res.status(401).send({ message: "Unauthorized access" });
+  }
+  const userId = session.userId;
+  const user = await users.findOne({ _id: new ObjectId(userId) });
+  if (!user) {
+    return res.status(401).send({ message: "Unauthorized access" });
+  }
+  req.user = user;
+  next();
+};
+
+//must call this after verifyToken middleware
+const verifySeeker = async (req, res, next) => {
+  if (req.user.role !== "seeker") {
+    return res.status(403).send({ message: "Forbidden access" });
+  }
+  next();
+};
+
+const verifyRecruiter = async (req, res, next) => {
+  if (req.user.role !== "recruiter") {
+    return res.status(403).send({ message: "Forbidden access" });
+  }
+  next();
+};
+
+const verifyAdmin = async (req, res, next) => {
+  if (req.user.role !== "admin") {
+    return res.status(403).send({ message: "Forbidden access" });
+  }
+  next();
+};
 
 app.get("/", (req, res) => {
   res.send("Server is running");
@@ -51,7 +102,7 @@ app.get("/users/:id/premium", async (req, res) => {
   res.send(result);
 });
 
-app.patch("/users/:id/role", async (req, res) => {
+app.patch("/users/:id/role", verifyToken, verifyAdmin, async (req, res) => {
   const { id } = req.params;
   const query = { _id: new ObjectId(id) };
   const updatedDoc = {
@@ -64,7 +115,7 @@ app.patch("/users/:id/role", async (req, res) => {
 });
 
 //job related api
-app.post("/jobs", async (req, res) => {
+app.post("/jobs", verifyToken, verifyRecruiter, async (req, res) => {
   const job = await req.body;
   const result = await jobs.insertOne(job);
   res.send(result);
@@ -111,18 +162,26 @@ app.delete("/jobs/:id", async (req, res) => {
 });
 
 //applications
-app.post("/applications", async (req, res) => {
+app.post("/applications", verifyToken, verifySeeker, async (req, res) => {
   const application = req.body;
   const result = await applications.insertOne(application);
   res.send(result);
 });
 
-app.get("/applications", async (req, res) => {
+app.get("/applications", verifyToken, async (req, res) => {
   const query = {};
   if (req.query.applicantId) {
     query.userId = req.query.applicantId;
   }
   if (req.query.jobId) {
+    const jobQuery = { _id: new ObjectId(req.query.jobId) };
+    const job = await jobs.findOne(jobQuery);
+    if (
+      job.recruiterId !== req.user._id.toString() &&
+      req.user.role !== "admin"
+    ) {
+      return res.status(403).send({ message: "forbidden" });
+    }
     query.jobId = req.query.jobId;
   }
   const cursor = applications.find(query);
