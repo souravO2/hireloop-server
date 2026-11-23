@@ -255,3 +255,5 @@ app.post("/payments/checkout-verify", async (req, res) => {
 app.listen(PORT, () => {
   console.log(`API is running on Port : ${PORT}`);
 });
+
+export default app;
